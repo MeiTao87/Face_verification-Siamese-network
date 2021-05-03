@@ -12,6 +12,8 @@ import random
 import tensorflow as tf
 from keras.callbacks import ModelCheckpoint
 import pickle
+from sklearn.utils import shuffle
+
 
 def calculate_dist(vectors):
     x, y = vectors
@@ -56,7 +58,8 @@ class Siamese_network():
         self.config_file_path = './models/model_config.npy'
         self.database_path = './data/database.pkl'
         self.database = None
-        self.img_path = '/content/drive/MyDrive/face_data'
+        self.img_path = '/content/drive/MyDrive/lfw/'
+        
         
     def create_database(self):
         names = os.listdir(self.img_path)
@@ -64,18 +67,19 @@ class Siamese_network():
         ########################################
         # change this 20, it is used for debug #
         ########################################
-        for i in range(20): 
+        for i in range(len(names)): 
             name = names[i]
             whole_path = os.path.join(self.img_path, name)
             if len(os.listdir(whole_path)) >= 2:
                 self.database[name] = []
                 print(f'i: {i}, name is {name}')
                 for img in os.listdir(whole_path):
-                    # if img.endswith('face.jpg'):
-                    _img_path = os.path.join(self.img_path, name, img)
-                    name_encoding = self.img_to_encoding(_img_path)
-                    # name_encoding = img_path
-                    self.database[name].append(name_encoding)
+                    if img.endswith('face.jpg'):
+                        print(img)
+                        _img_path = os.path.join(self.img_path, name, img)
+                        name_encoding = self.img_to_encoding(_img_path)
+                        # name_encoding = img_path
+                        self.database[name].append(name_encoding)
         try:
             os.mkdir('./data')
         except:
@@ -114,8 +118,16 @@ class Siamese_network():
         dist = Lambda(calculate_dist, 
                     output_shape=calculate_dist_output_shape)([base_output_a, base_output_b])
         model = Model([input_a, input_b], dist)
-        optimizer = Adam()
-        model.compile(loss=contrastive_loss, optimizer=optimizer, metrics=[self.metrics])
+        initial_learning_rate = 0.01
+        # initial_learning_rate / (1 + decay_rate * step / decay_step)
+        lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(
+            initial_learning_rate,
+            decay_steps=25,
+            decay_rate=0.9,
+            staircase=True)
+        optimizer = Adam(learning_rate=lr_schedule)
+        rms = RMSprop(learning_rate=lr_schedule)
+        model.compile(loss=contrastive_loss, optimizer=rms, metrics=[self.metrics])
         print(model.summary())
         return model
 
@@ -144,24 +156,28 @@ class Siamese_network():
             copy_names = names.copy()
             del copy_names[j]
             imgs_list = self.database[name]
-            for i in range(len(imgs_list)):
-                img_a = imgs_list[i] # choose anchor
-                # delete the ith element from imgs_list
-                copy_img_list = imgs_list.copy()
-                del copy_img_list[i]
-                img_p =  random.choice(copy_img_list)# choose positive
-                pairs += [[img_a, img_p]] # label 1
-                
-                # negative image
-                # first choose one from copy_names
-                n_class_index = np.random.randint(0, len(copy_names))
-                # then choose random one from this negative class
-                # which class?
-                n_class = self.database[copy_names[n_class_index]]
-                img_n = random.choice(n_class)
-                pairs += [[img_a, img_n]] # label 0
-                labels += [1, 0]
-                pairs, labels = np.array(pairs), np.array(labels)
+            if len(imgs_list) >= 2:
+                for i in range(len(imgs_list)):
+                    img_a = imgs_list[i] # choose anchor
+                    # delete the ith element from imgs_list
+                    copy_img_list = imgs_list.copy()
+                    del copy_img_list[i]
+                    img_p =  random.choice(copy_img_list)# choose positive
+                    pairs += [[img_a, img_p]] # label 1
+                    
+                    # negative image
+                    # first choose one from copy_names
+                    n_class_index = np.random.randint(0, len(copy_names))
+                    # then choose random one from this negative class
+                    # which class?
+                    n_class = self.database[copy_names[n_class_index]]
+                    img_n = random.choice(n_class)
+                    pairs += [[img_a, img_n]] # label 0
+                    labels += [1, 0]
+        pairs, labels = np.array(pairs), np.array(labels) 
+        # pairs.shape (18068, 2, 1, 7, 7, 512), labels.shape (18068, )
+        # Shuffle 
+        pairs, labels = shuffle(pairs, labels)
         return pairs, labels
     
     # database{'mt': [encoding of mt's pictures],
@@ -203,7 +219,7 @@ class Siamese_network():
         self.model.fit([training_pairs[:,0], training_pairs[:,1]], labels,
                         batch_size=batch_size, 
                         epochs=epochs,
-                        validation_split=0.2,
+                        validation_split=0.3,
                         callbacks=[checkpoint])
         
         self.model.save_weights(self.weight_file_path)
@@ -295,11 +311,16 @@ def main():
     fnet = Siamese_network()
     fnet.vgg16_include_top = False
    
-    # fnet.fit(epochs=5)
+    # fnet.fit(epochs=200)
     fnet.load_model()
     
-    fnet.verify(img_path='/content/drive/MyDrive/face_data/Silvio_Fernandez/Silvio_Fernandez_0001.jpg', person='Silvio_Fernandez')
-    fnet.verify(img_path='/content/drive/MyDrive/face_data/Silvio_Fernandez/Silvio_Fernandez_0001.jpg', person='Greg_Gilbert')
-    fnet.verify(img_path='/content/drive/MyDrive/face_data/Silvio_Fernandez/Silvio_Fernandez_0001.jpg', person='Larry_Brown')
-    fnet.verify(img_path='/content/drive/MyDrive/face_data/Silvio_Fernandez/Silvio_Fernandez_0001.jpg', person='Bridget_Fonda')
-main()
+    # fnet.verify(img_path='/content/drive/MyDrive/lfw/mt/100face.jpg', person='mt')
+    # fnet.verify(img_path='/content/drive/MyDrive/lfw/mt/100face.jpg', person='zwq')
+
+    # fnet.compare('/content/drive/MyDrive/lfw/mt/100face.jpg', '/content/drive/MyDrive/lfw/mt/0face.jpg')
+    # fnet.compare('/content/drive/MyDrive/lfw/mt/100face.jpg', '/content/drive/MyDrive/lfw/zwq/0face.jpg')
+
+    # fnet.who_is_this('/content/drive/MyDrive/lfw/mt/100face.jpg')
+    # fnet.who_is_this('/content/drive/MyDrive/lfw/zwq/0face.jpg')
+if __name__ == '__main__':
+    main()
